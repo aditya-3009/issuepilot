@@ -1,9 +1,9 @@
 # IssuePilot Learning Log
 
-A living companion guide explaining what we have built, why it exists, what we learned, and how to explain it in an interview.
+A living engineering journal explaining what we have built, why it exists, what we learned, the problems we encountered, and how we can explain the work in an interview.
 
 **Repository:** https://github.com/aditya-3009/issuepilot  
-**Current status:** Initial codebase committed and pushed to the public `main` branch on 11 October 2026. The ingestion/database/API foundation is implemented; RAG and agent features remain future work.
+**Current status (14 October 2026):** The ingestion, database, and FastAPI foundation is implemented. The current automated test suite has **13 passing tests**. Retrieval, RAG, and agent features remain future work.
 
 ## 1. Project goal
 
@@ -20,7 +20,7 @@ We are building it in layers:
 7. Require human approval before any write action to GitHub.
 8. Evaluate the system using repeatable tests and labeled examples.
 
-Important: the current starter has completed the initial ingestion/database/API foundation. It is not yet an AI agent or a RAG application.
+**Scope check:** The current version is an ingestion/database/API starter. It is not yet an AI agent or a RAG application.
 
 ## 2. Current architecture
 
@@ -48,24 +48,37 @@ issuepilot/main.py
         |
         v
 Browser / API client
+
+Automated checks:
+tests/test_api.py
+tests/test_github_client.py
+tests/test_ingest.py
 ```
 
 ## 3. What each file does
 
 ### `issuepilot/github_client.py`
-Talks to GitHub's REST API. It uses `requests.Session()`, query parameters for pagination, a timeout, and status-code checks. GitHub's Issues endpoint can include pull requests, so records with a `pull_request` field are filtered out.
+
+Talks to GitHub's REST API. It uses `requests.Session()`, query parameters for pagination, a timeout, and status-code checks. GitHub's Issues endpoint can include pull requests, so records with a `pull_request` field are filtered out. Tests mock HTTP responses so pagination and failure cases can be tested without depending on live GitHub requests.
 
 ### `issuepilot/ingest.py`
-Moves records from GitHub into the database. `argparse` lets us choose the repository and number of pages. `parse_datetime()` normalizes timestamps. `upsert_issues()` looks up each record by GitHub's stable issue ID, inserts new records, and refreshes existing ones.
+
+Moves records from GitHub into the database. `argparse` lets us choose the repository and number of pages. `parse_datetime()` normalizes timestamps to naive UTC for the starter's SQLite/PostgreSQL portability convention. `upsert_issues()` looks up each record by GitHub's stable issue ID, inserts new records, and refreshes existing ones.
+
+The upsert function also tracks IDs seen during the current batch. This matters because SQLAlchemy sessions can have `autoflush=False`: a newly added object may not yet be visible to a subsequent database query in the same transaction. Tracking pending objects prevents the same GitHub ID from being inserted twice in one batch.
 
 ### `issuepilot/models.py`
+
 Defines the `Issue` table through SQLAlchemy. Each row stores the GitHub ID, repository, issue number, title, body, state, URL, author, labels, comment count, and timestamps. `github_id` is unique to help prevent duplicate records.
 
 ### `issuepilot/db.py`
-Creates the database engine and session factory. The default is local SQLite (`issuepilot.db`). `DATABASE_URL` in `.env` can later point to PostgreSQL. A session is used to query or modify records and is closed after use.
+
+Creates the database engine and session factory. The default is local SQLite (`issuepilot.db`). `DATABASE_URL` can later point to PostgreSQL. A session is used to query or modify records and is closed after use.
 
 ### `issuepilot/main.py`
+
 Defines the FastAPI service:
+
 - `GET /health`: confirms the service responds.
 - `GET /issues`: returns stored issues with basic filters and pagination.
 - `GET /metrics/summary`: counts total, open, and closed issues.
@@ -73,8 +86,11 @@ Defines the FastAPI service:
 
 The API reads the local database. It does not call GitHub every time `/issues` is requested.
 
-### `tests/test_api.py`
-Contains three basic automated tests: health response, issue response shape, and summary response shape. These are smoke tests, not comprehensive ingestion or failure-case tests.
+### Tests
+
+- `tests/test_api.py`: three tests for health, issue response shape, and summary response shape.
+- `tests/test_github_client.py`: four tests for pagination and pull-request exclusion, invalid pagination, missing repositories, and network failures.
+- `tests/test_ingest.py`: six tests for insertion, updating without duplicates, multiple distinct issues, duplicate IDs within one batch, timezone normalization, and missing timestamps.
 
 ## 4. Commands we've used
 
@@ -110,7 +126,13 @@ Ingest one page:
 python -m issuepilot.ingest --owner fastapi --repo fastapi --pages 1
 ```
 
-Run tests:
+Run only ingestion tests:
+
+```powershell
+python -m pytest tests/test_ingest.py -q
+```
+
+Run the full suite:
 
 ```powershell
 python -m pytest -q
@@ -132,21 +154,8 @@ On 11 October 2026, we published the initial IssuePilot codebase to the public G
 - Branch: `main`
 - Initial commit: `555a176` (`Initial commit: IssuePilot project`)
 - Initial commit contents: 11 files and 393 insertions.
-- The first push succeeded and configured the local `main` branch to track `origin/main`.
 
-### Commands used
-
-From the project root:
-
-```powershell
-git init
-git branch -M main
-git add .
-git status
-git commit -m "Initial commit: IssuePilot project"
-git remote add origin https://github.com/aditya-3009/issuepilot.git
-git push -u origin main
-```
+The learning log was subsequently added under `Docs/LEARNING_LOG.md` and committed separately.
 
 ### What went wrong and how it was fixed
 
@@ -161,17 +170,17 @@ gh auth setup-git
 git push -u origin main
 ```
 
-The final push completed successfully. This is a useful real-world lesson: when GitHub returns a permission error, check the authenticated account and repository access before changing the code or recreating the repository.
+The final push completed successfully. Lesson: when GitHub returns a permission error, check the authenticated account and repository access before changing code or recreating the repository.
 
 ### Repository hygiene
 
-The committed `.env.example` contains a blank `GITHUB_TOKEN` setting and a local SQLite default. Keep real credentials in `.env`, which must remain untracked and ignored. Never publish access tokens, local virtual environments, or private database contents.
+The committed `.env.example` contains configuration placeholders. Keep real credentials in `.env`, which must remain untracked and ignored. Never publish access tokens, local virtual environments, or private database contents.
 
-The initial commit contains the application files, tests, README, dependency list, `.gitignore`, and `.env.example`. The learning log was not included in that initial commit; copy this document into the project root as `LEARNING_LOG.md` and commit it separately.
+## 6. Ingestion validation: results and debugging notes
 
-## 6. What our terminal output means
+### Live ingestion observation
 
-We ran ingestion twice and got:
+We ran ingestion against one page of the FastAPI repository and observed:
 
 ```text
 Repository: fastapi/fastapi
@@ -180,13 +189,61 @@ Inserted: 0
 Updated: 1
 ```
 
+Interpretation:
+
 - `Fetched: 1`: one real issue was returned by GitHub.
 - `Inserted: 0`: no new row was needed.
 - `Updated: 1`: the matching database row was refreshed.
 
-This shows that repeat ingestion works for the single record in our sample. It does not yet prove that pagination, bulk ingestion, all error cases, or concurrent runs are correct.
+This demonstrates repeat ingestion for the observed record. It does not prove that large-scale ingestion, concurrent runs, or every GitHub failure scenario is production-ready.
 
-Our tests returned `3 passed`, confirming the three existing API smoke tests passed. The Starlette/httpx deprecation message is a warning, not a test failure; we can review dependency compatibility later.
+### Automated test results on 14 October 2026
+
+The following commands completed successfully:
+
+```text
+python -m pytest tests/test_ingest.py -q
+6 passed, 6 warnings in 0.48s
+
+python -m pytest -q
+13 passed, 7 warnings in 0.82s
+```
+
+The full suite consists of 3 API tests, 4 GitHub client tests, and 6 ingestion tests. The warnings did not cause test failures.
+
+### Problems encountered and how we solved them
+
+#### Problem 1: Duplicate GitHub IDs in the same ingestion batch caused a unique-constraint error
+
+**Symptom:** `test_upsert_handles_duplicate_id_within_one_batch` raised an SQLAlchemy `IntegrityError` for the unique `issues.github_id` constraint.
+
+**Root cause:** The session factory has `autoflush=False`. The first issue in the batch was added to the session but had not yet been flushed to the database. When the same ID appeared again, a database query did not find that pending object, so the code attempted a second insert.
+
+**Fix:** Added a `seen_by_github_id` dictionary inside `upsert_issues()`. Each processed ID maps to its ORM object, including pending inserts. Later occurrences reuse and update that object instead of queuing a second insert.
+
+**Verification:** The duplicate-batch test now passes. It verifies one row remains for the repeated ID and the later occurrence updates that row. The entire suite passes with 13 tests.
+
+**Lesson:** A database uniqueness constraint is a valuable final safeguard, but application logic must also account for objects pending in the current ORM session.
+
+#### Problem 2: The ingestion tests could not find `engine` or `parse_datetime()`
+
+**Symptom:** Tests raised `AttributeError` because `issuepilot.ingest` had no `engine` or `parse_datetime` attributes.
+
+**Root cause:** While replacing `upsert_issues()`, the file was accidentally replaced with only that function. This removed the module imports, datetime helper, and CLI `main()` function that the application and tests rely on.
+
+**Fix:** Restored the complete `issuepilot/ingest.py` module, then incorporated the duplicate-ID fix only within `upsert_issues()`.
+
+**Verification:** The ingestion tests passed (6/6), followed by the full suite (13/13).
+
+**Lesson:** When modifying one function, preserve the surrounding module and verify the complete file. Tests that import module-level helpers can catch accidental deletion of code outside the intended change.
+
+#### Problem 3: Deprecation warnings remain despite passing tests
+
+**Symptom:** The test suite reports a SQLAlchemy warning about `datetime.utcnow()` and a Starlette warning about using `httpx` with `starlette.testclient`.
+
+**Current status:** These are warnings, not failures. The application tests currently pass. The datetime default in the model should be modernized carefully while keeping stored timestamps consistent with the project's UTC convention. The testing dependency warning should be investigated before changing package versions.
+
+**Next action:** Address each warning as a separate, tested maintenance change rather than bundling unverified dependency changes into the ingestion bug fix.
 
 ## 7. Concepts in plain English
 
@@ -196,48 +253,55 @@ Our tests returned `3 passed`, confirming the three existing API smoke tests pas
 - **ORM:** SQLAlchemy maps Python classes and objects to relational database tables and rows.
 - **Insert:** create a row. **Update:** change an existing row. **Upsert:** insert if new, update if it already exists.
 - **Idempotency:** repeating an operation should not create duplicate copies of the same issue.
+- **Pending ORM object:** an object added to a SQLAlchemy session that may not yet have been written to the database.
+- **Autoflush:** SQLAlchemy's mechanism for flushing pending changes before certain database operations. With autoflush disabled, code must not assume pending inserts will be visible to a query.
+- **Unique constraint:** a database rule that prevents duplicate values in a column or column combination.
+- **Regression test:** a test that protects against a previously discovered bug returning.
 - **Endpoint:** a URL and HTTP method that performs a defined operation.
-- **Automated test:** code that checks expected behavior without manual clicking.
 - **RAG (future):** retrieve relevant source material and provide it to an LLM as context before generating an answer. This helps ground answers but does not guarantee correctness.
 - **Agent workflow (future):** a controlled workflow that chooses tools, logs actions, handles failures, and requires approval for consequential changes.
 
 ## 8. Current limitations
 
-1. We have only observed one issue from one page.
-2. The tests are basic and do not test ingestion directly.
+1. Live ingestion has only been observed on a small sample of one page.
+2. The automated tests cover important starter behavior but do not establish production readiness.
 3. Label filtering currently happens after fetching a bounded set of rows; this should be improved before large-scale use.
-4. Database table creation is currently simple starter logic, not a production migration system.
+4. Database table creation is starter logic, not a production migration system.
 5. The API has not been deployed.
 6. There is no LLM, vector index, RAG, or agent in the current version.
-7. Tests emit a Starlette/httpx deprecation warning, although they pass.
-8. Do not claim quality improvements or business impact until they have been measured.
+7. Tests still emit SQLAlchemy datetime and Starlette/httpx deprecation warnings.
+8. Concurrent ingestion and large-volume performance have not been validated.
+9. Do not claim quality improvements or business impact until they have been measured.
 
 ## 9. Next milestones
 
-### Documentation follow-up
-- Copy this file into the project root as `LEARNING_LOG.md`.
-- Commit and push it as a separate documentation update.
-- Check that the README setup steps work from a clean environment.
+### Milestone 2.2: Ingestion validation (in progress)
 
-### Milestone 2.2: Ingestion validation
-- Test multiple pages and records.
-- Test repeat ingestion.
-- Add tests for insert/update behavior.
-- Improve logging and rate-limit handling.
-- Verify database counts.
+- [x] Add GitHub client tests for pagination, pull-request exclusion, invalid pagination, missing repository, and network failure.
+- [x] Add ingestion tests for inserts, updates, multiple records, duplicate IDs in one batch, and timestamp handling.
+- [x] Fix duplicate-ID handling when autoflush is disabled.
+- [x] Verify the full suite: 13 tests passed.
+- [ ] Modernize the model's deprecated datetime default without changing the UTC storage convention.
+- [ ] Investigate the Starlette/httpx deprecation warning and choose compatible testing dependencies.
+- [ ] Test multiple real GitHub pages and verify database counts.
+- [ ] Improve logging and rate-limit handling.
+- [ ] Review label filtering and query behavior before scaling.
 
 ### Milestone 3: Search
+
 - Add SQL-backed filters and keyword search.
 - Add related-issue search.
 - Test pagination and edge cases.
 
 ### Milestone 4: Retrieval and GenAI
+
 - Build a small evaluation dataset.
 - Add embeddings and semantic retrieval.
 - Generate structured summaries with source links.
 - Test irrelevant questions and unsupported claims.
 
 ### Milestone 5: Agent workflow and safety
+
 - Add tool selection/orchestration.
 - Start with read-only tools.
 - Add approval and audit logging before any GitHub write action.
@@ -246,6 +310,6 @@ Our tests returned `3 passed`, confirming the three existing API smoke tests pas
 
 A truthful explanation of the current implementation:
 
-"I built the initial foundation of IssuePilot, a developer-operations intelligence application. It ingests public GitHub issues through the REST API, normalizes records, stores them in SQLite using SQLAlchemy, and exposes issue listing and summary metrics through FastAPI. I implemented an upsert path keyed by GitHub's issue ID and verified the basic API endpoints with pytest. The next phase is to add retrieval, evaluation, and an LLM-based triage workflow."
+"I built the initial foundation of IssuePilot, a developer-operations intelligence application. It ingests public GitHub issues through the REST API, normalizes records, stores them in SQLite using SQLAlchemy, and exposes issue listing and summary metrics through FastAPI. I implemented an upsert path keyed by GitHub's issue ID and added automated tests for the API, GitHub client behavior, and ingestion edge cases. While testing, I found and fixed a duplicate-ID bug caused by pending SQLAlchemy objects when autoflush was disabled. The current test suite passes 13 tests. The next phase is to add retrieval, evaluation, and an LLM-based triage workflow."
 
 Only describe components that are implemented and tested at interview time. Update this explanation as the project grows.
