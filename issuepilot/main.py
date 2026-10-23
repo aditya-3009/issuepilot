@@ -48,8 +48,13 @@ def list_issues(
     stmt = select(Issue)
 
     # Search issue titles and descriptions.
-    if search:
-        term = f"%{search.strip()}%"
+    if search is not None:
+        search = search.strip()
+
+        if not search:
+            return {"count": 0, "items": []}
+
+        term = f"%{search}%"
         stmt = stmt.where(
             or_(
                 Issue.title.ilike(term),
