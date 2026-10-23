@@ -24,3 +24,16 @@ def test_summary_shape():
     assert response.status_code == 200
     payload = response.json()
     assert {"total_issues", "open_issues", "closed_issues"} <= set(payload)
+
+def test_issue_search_filters_results():
+    response = client.get("/issues", params={"search": "authentication"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert isinstance(payload["items"], list)
+
+    for issue in payload["items"]:
+        searchable_text = (
+            f"{issue['title']} {issue.get('body') or ''}"
+        ).lower()
+        assert "authentication" in searchable_text
