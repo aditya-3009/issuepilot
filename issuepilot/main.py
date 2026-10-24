@@ -71,19 +71,34 @@ def list_issues(
     if state:
         stmt = stmt.where(Issue.state == state)
 
+    if label:
+        if db.bind.dialect.name == "sqlite":
+            label_values = func.json_each(Issue.labels).table_valued(
+                "value"
+            ).alias("issue_label")
+        elif db.bind.dialect.name == "postgresql":
+            label_values = func.json_array_elements_text(
+                Issue.labels
+            ).table_valued("value").alias("issue_label")
+        else:
+            raise NotImplementedError(
+                "Label filtering requires SQLite or PostgreSQL JSON support."
+            )
+
+        matching_label = (
+            select(1)
+            .select_from(label_values)
+            .where(func.lower(label_values.c.value) == label.lower())
+            .correlate(Issue)
+            .exists()
+        )
+        stmt = stmt.where(matching_label)
+
     rows = db.scalars(
         stmt.order_by(Issue.updated_at.desc())
         .offset(offset)
         .limit(limit)
     ).all()
-
-    if label:
-        rows = [
-            row
-            for row in rows
-            if label.lower()
-            in [str(item).lower() for item in (row.labels or [])]
-        ]
 
     return {
         "count": len(rows),
