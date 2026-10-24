@@ -1,18 +1,22 @@
 
-from fastapi import Depends, FastAPI, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .db import Base, engine, get_db
 from .models import Issue
+from .retrieval import semantic_search
 
 
 Base.metadata.create_all(engine)
 
 app = FastAPI(
     title="IssuePilot API",
-    description="Developer-operations intelligence: GitHub issue ingestion and analytics.",
-    version="0.1.0",
+    description=(
+        "Developer-operations intelligence: "
+        "GitHub issue ingestion, analytics, and semantic search."
+    ),
+    version="0.2.0",
 )
 
 
@@ -21,7 +25,7 @@ def health():
     return {
         "status": "ok",
         "service": "issuepilot-api",
-        "version": "0.1.0",
+        "version": "0.2.0",
     }
 
 
@@ -47,7 +51,6 @@ def list_issues(
 ):
     stmt = select(Issue)
 
-    # Search issue titles and descriptions.
     if search is not None:
         search = search.strip()
 
@@ -62,22 +65,18 @@ def list_issues(
             )
         )
 
-    # Filter by repository.
     if repo:
         stmt = stmt.where(Issue.repo_full_name == repo)
 
-    # Filter by issue state.
     if state:
         stmt = stmt.where(Issue.state == state)
 
-    # Retrieve the requested page of results.
     rows = db.scalars(
         stmt.order_by(Issue.updated_at.desc())
         .offset(offset)
         .limit(limit)
     ).all()
 
-    # Filter labels after retrieving the bounded result set.
     if label:
         rows = [
             row
@@ -107,6 +106,38 @@ def list_issues(
             }
             for row in rows
         ],
+    }
+
+
+@app.get("/issues/semantic-search", tags=["semantic search"])
+def search_issues_semantically(
+    q: str = Query(
+        min_length=1,
+        description="Natural-language question or issue description",
+    ),
+    top_k: int = Query(default=5, ge=1, le=20),
+):
+    """Find GitHub issues by semantic similarity."""
+    if not q.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Query must not be empty.",
+        )
+
+    try:
+        results = semantic_search(q, top_k=top_k)
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Semantic search failed. Check the server logs.",
+        ) from exc
+
+    return {
+        "query": q,
+        "count": len(results),
+        "items": results,
     }
 
 
