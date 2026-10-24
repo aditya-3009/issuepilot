@@ -1,22 +1,52 @@
-
 # IssuePilot
 
-IssuePilot is a developer-operations intelligence project that ingests public GitHub issues, stores them in a relational database, and exposes them through a REST API. The current MVP establishes the data ingestion and API foundation for future retrieval-augmented generation (RAG), agent workflows, and human-approved actions.
+IssuePilot is a developer-operations intelligence project that ingests public GitHub issues, stores them in a relational database, and exposes them through a REST API. It supports both keyword-based search and semantic retrieval over issue content.
 
-## Current MVP
+The current implementation is a retrieval-focused foundation for a future RAG workflow. It retrieves relevant issues and their source URLs; it does **not yet generate answers with an LLM** or execute agent-driven write actions.
 
-- Fetches issues from public GitHub repositories through the GitHub REST API.
-- Handles pagination and filters out pull requests returned by the Issues API.
-- Normalizes issue data and upserts records to avoid duplicate rows during repeated ingestion.
-- Stores issues in SQLite by default, with PostgreSQL support through `DATABASE_URL`.
-- Exposes health, issue listing, search, filtering, and summary endpoints through FastAPI.
-- Includes automated tests for API behavior, GitHub client handling, and ingestion safeguards.
-- Handles empty and whitespace-only search queries and trims unnecessary whitespace from search terms.
+## Features
+
+- Fetches issues from public GitHub repositories using the GitHub REST API.
+- Supports pagination and excludes pull requests returned by the Issues API.
+- Normalizes issue data and upserts records to prevent duplicates during repeated ingestion.
+- Stores data in SQLite by default, with PostgreSQL support through `DATABASE_URL`.
+- Exposes FastAPI endpoints for health checks, issue listing/search/filtering, summary metrics, and semantic search.
+- Uses Sentence Transformers (`sentence-transformers/all-MiniLM-L6-v2`) to create 384-dimensional embeddings.
+- Uses FAISS inner-product search over normalized embeddings to rank semantically similar issues.
+- Caches the embedding model and in-memory FAISS index within a running process.
+- Includes automated tests for API behavior, GitHub client handling, ingestion safeguards, and semantic-search endpoint behavior.
+
+## Architecture
+
+```text
+GitHub REST API
+      |
+      v
+Issue ingestion and normalization
+      |
+      v
+SQLAlchemy database (SQLite by default / PostgreSQL configurable)
+      |
+      v
+Issue text construction
+      |
+      v
+Sentence Transformers embeddings
+      |
+      v
+FAISS vector similarity search
+      |
+      v
+FastAPI semantic-search endpoint
+      |
+      v
+Ranked issue metadata, similarity scores, and GitHub source URLs
+```
 
 ## Requirements
 
-- Python 3.10+
-- Internet access for GitHub ingestion.
+- Python 3.10 or newer.
+- Internet access to ingest public GitHub issues and download the embedding model on first use.
 - A GitHub token is optional for a small number of public API requests. A token can be configured for higher API rate limits.
 
 ## Setup (Windows PowerShell)
@@ -27,99 +57,128 @@ Run these commands from the project root:
 py -3.10 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-pip install -r requirements.txt
-Copy-Item .env.example .env
+python -m pip install -r requirements.txt
 ```
 
-If PowerShell blocks virtual environment activation, use the Python executable directly:
+If PowerShell blocks virtual-environment activation, use the environment's Python executable directly:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Alternatively, select the project's `.venv` interpreter in VS Code.
+Alternatively, select the project's `.venv` interpreter in VS Code. Ensure that `requirements.txt` includes the project's runtime and RAG dependencies before installing.
 
-## Ingest a Small Public Sample
+## Ingest Issues
 
-Start with one page to keep the initial run small. This example ingests issues from `fastapi/fastapi`:
+Start with a small public sample from `fastapi/fastapi`:
 
 ```powershell
-python -m issuepilot.ingest --owner fastapi --repo fastapi --pages 1
+python -m issuepilot.ingest --owner fastapi --repo fastapi --pages 1 --per-page 50
 ```
 
-The GitHub Issues API can return both issues and pull requests. IssuePilot filters out pull requests.
+You can ingest another repository too:
 
-See the [GitHub Issues API documentation](https://docs.github.com/en/rest/issues/issues).
+```powershell
+python -m issuepilot.ingest --owner pallets --repo flask --pages 3 --per-page 100
+```
+
+GitHub's Issues API can return pull requests as well as issues. IssuePilot filters pull requests out. The number returned may be lower than the requested page size.
+
+Documentation: [GitHub Issues API](https://docs.github.com/en/rest/issues/issues).
 
 ## Run the API
 
-Start the development server:
+Start the development server from the project root:
 
 ```powershell
-uvicorn issuepilot.main:app --reload
+python -m uvicorn issuepilot.main:app --reload
 ```
 
-Open these endpoints in your browser:
+Open the interactive documentation at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
 
-- Health check: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
-- Interactive API documentation: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
-- List and search issues: [http://127.0.0.1:8000/issues](http://127.0.0.1:8000/issues)
-- Summary metrics: [http://127.0.0.1:8000/metrics/summary](http://127.0.0.1:8000/metrics/summary)
+### Available endpoints
 
-### Search, Filter, and Paginate Issues
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/health` | Health check |
+| `GET` | `/issues` | List, keyword-search, filter, and paginate issues |
+| `GET` | `/issues/semantic-search?q=API%20validation%20errors&top_k=5` | Retrieve issues ranked by semantic similarity |
+| `GET` | `/metrics/summary` | Counts of total, open, and closed issues |
 
-The `GET /issues` endpoint supports the following query parameters:
+### Keyword search, filtering, and pagination
+
+The `GET /issues` endpoint supports these query parameters:
 
 | Parameter | Purpose | Example |
 |---|---|---|
-| `search` | Search issue titles and descriptions using a case-insensitive text match | `?search=OpenTelemetry` |
+| `search` | Case-insensitive text match in issue titles and descriptions | `?search=OpenTelemetry` |
 | `repo` | Filter by full repository name | `?repo=fastapi/fastapi` |
 | `state` | Filter by issue state: `open` or `closed` | `?state=open` |
 | `label` | Keep issues with the specified label | `?label=bug` |
-| `limit` | Number of records requested, from 1 to 100; default is 20 | `?limit=10` |
-| `offset` | Number of records to skip for pagination; default is 0 | `?offset=20` |
+| `limit` | Page size from 1 to 100; default 20 | `?limit=10` |
+| `offset` | Number of records to skip; default 0 | `?offset=20` |
 
-Parameters can be combined. For example:
+Example:
 
 ```text
 http://127.0.0.1:8000/issues?search=OpenTelemetry&state=closed&limit=10
 ```
 
-Search uses SQL text matching. It does not currently use semantic search or embeddings.
+Keyword search uses SQL text matching; it is separate from semantic retrieval.
 
-**Known limitation:** Label filtering is applied after the database page is retrieved. Consequently, a response may contain fewer items than the requested `limit` when a label filter is used.
+**Known limitation:** label filtering is currently applied after the database page is retrieved. A page may therefore contain fewer items than the requested `limit` when a label filter is used.
 
-## Run Tests
+### Semantic search
 
-Run the test suite from the project root with the active virtual environment:
+Use natural language to find conceptually related issues, even when the query does not use the same wording as an issue title.
+
+Example request:
+
+```text
+GET /issues/semantic-search?q=API%20returns%20an%20incorrect%20validation%20error&top_k=5
+```
+
+Example PowerShell command:
+
+```powershell
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/issues/semantic-search?q=API%20validation%20errors&top_k=5"
+```
+
+The JSON response includes the query, result count, and ranked issue records with repository, issue number, title, state, source URL, and similarity score. Scores are ranking signals, not probabilities that a result is correct.
+
+The first semantic search in a server process may take longer while the embedding model and FAISS index are loaded/built. They are cached for subsequent searches in that process.
+
+**Refreshing the index:** the current index is an in-memory snapshot. If new issues are ingested while the API process is running, restart the process to clear the cache and build a new index. A persistent vector store and automatic index refresh are future improvements.
+
+## Tests
+
+Run the full test suite from the project root with the virtual environment activated:
 
 ```powershell
 python -m pytest -q
 ```
 
-The current test suite contains **16 tests** covering API behavior, GitHub client handling, and ingestion/upsert safeguards.
+At the time of this README update, **20 tests pass**. Tests cover API behavior, GitHub client handling, ingestion/upsert behavior, and the semantic-search endpoint contract. Endpoint tests mock the retrieval function, so they do not need to download the model or contact GitHub. Manual semantic retrieval has also been checked against the local sample dataset.
 
-## Suggested Acceptance Checks
+## Current scope and next steps
 
-1. Ingest one page of issues from a public GitHub repository.
-2. Confirm that the ingestion command reports fetched, inserted, and updated counts.
-3. Start the API server and open `/docs`.
-4. Verify that `/issues` returns structured JSON and test the `search`, `repo`, and `state` parameters.
-5. Run `python -m pytest -q` and confirm that all tests pass.
-6. Rerun ingestion and verify that existing GitHub issues are updated rather than duplicated.
+Implemented:
+1. GitHub issue ingestion, normalization, and relational storage.
+2. FastAPI endpoints for issue access and summary metrics.
+3. Sentence Transformer embeddings and FAISS semantic retrieval.
+4. Cached model/index within a running process.
+5. Automated endpoint and ingestion tests.
 
-## Architecture Roadmap
+Potential next steps:
+1. Add retrieval-level evaluation with a labeled query set and metrics such as Recall@k or MRR.
+2. Refresh the vector index automatically after ingestion and consider persistent index storage.
+3. Add an LLM answer-generation layer that cites retrieved issues as evidence.
+4. Explore tool-using workflows or LangGraph only after defining a clear use case.
+5. Add human approval, audit logging, and safeguards before any GitHub write actions.
 
-1. **Foundation (current MVP):** GitHub API → normalization → relational database → FastAPI.
-2. **Retrieval (future):** Embeddings and semantic search for similar issues and documentation.
-3. **LLM layer (future):** Structured issue summaries and classification supported by evidence.
-4. **Agent workflow (future):** SQL analytics and retrieval tools orchestrated with LangGraph.
-5. **Safety (future):** Human approval before any write action to GitHub.
-6. **Evaluation (future):** A labeled test set, retrieval and classification metrics, API tests, and latency/cost measurements.
+## Security and honest scope
 
-## Security and Honest Scope
-
-- Never commit `.env` files or real API tokens.
-- Do not enable write actions until review, approval, and audit logging are implemented.
-- RAG, embeddings, LLM generation, and agent workflows are roadmap items, not part of the current MVP.
-- Do not claim evaluation improvements until they have been measured.
+- Never commit `.env` files or API tokens.
+- The current semantic-search endpoint retrieves ranked issues; it does not produce LLM-generated answers.
+- Agent workflows and GitHub write actions are not implemented.
+- Do not claim retrieval or classification improvements until they have been measured with a defined evaluation set.
