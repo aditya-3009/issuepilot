@@ -1,8 +1,8 @@
 # IssuePilot
 
-IssuePilot is a developer-operations intelligence project that ingests public GitHub issues, stores them in a relational database, and exposes them through a REST API. It supports both keyword-based search semantic retrieval over issue content, and optional RAG answers grounded in retrieved issues.
+IssuePilot is a developer-operations intelligence project that ingests public GitHub issues, stores them in a relational database, and exposes them through a REST API. It supports keyword-based search, semantic retrieval over issue content, and optional RAG answers grounded in retrieved issues.
 
-The current implementation is a retrieval-focused foundation for a future RAG workflow. It retrieves relevant issues and their source URLs; it does **not yet generate answers with an LLM** or execute agent-driven write actions.
+The implementation retrieves relevant issues and can optionally generate evidence-grounded answers with an LLM. It does not execute agent-driven write actions.
 
 ## Features
 
@@ -10,9 +10,11 @@ The current implementation is a retrieval-focused foundation for a future RAG wo
 - Supports pagination and excludes pull requests returned by the Issues API.
 - Normalizes issue data and upserts records to prevent duplicates during repeated ingestion.
 - Stores data in SQLite by default, with PostgreSQL support through `DATABASE_URL`.
-- Exposes FastAPI endpoints for health checks, issue listing/search/filtering, summary metrics, and semantic search.
+- Exposes FastAPI endpoints for health checks, issue listing/search/filtering, summary metrics, semantic search, and RAG question answering.
 - Uses Sentence Transformers (`sentence-transformers/all-MiniLM-L6-v2`) to create 384-dimensional embeddings.
-- Uses FAISS inner-product search over normalized embeddings to rank semantically similar issues.\n- Supports optional LLM answer generation through an OpenAI-compatible chat-completions API.\n- Returns source issue metadata and GitHub URLs alongside generated answers.
+- Uses FAISS inner-product search over normalized embeddings to rank semantically similar issues.
+- Supports optional LLM answer generation through an OpenAI-compatible chat-completions API.
+- Returns source issue metadata and GitHub URLs alongside generated answers.
 - Caches the embedding model and in-memory FAISS index within a running process.
 - Includes automated tests for API behavior, GitHub client handling, ingestion safeguards, and semantic-search endpoint behavior.
 
@@ -102,7 +104,8 @@ Open the interactive documentation at [http://127.0.0.1:8000/docs](http://127.0.
 |---|---|---|
 | `GET` | `/health` | Health check |
 | `GET` | `/issues` | List, keyword-search, filter, and paginate issues |
-| `GET` | `/issues/semantic-search?q=API%20validation%20errors&top_k=5` | Retrieve issues ranked by semantic similarity |\n| `POST` | `/issues/ask` | Generate an answer grounded in retrieved issues, with source links |
+| `GET` | `/issues/semantic-search?q=API%20validation%20errors&top_k=5` | Retrieve issues ranked by semantic similarity |
+| `POST` | `/issues/ask` | Generate an answer grounded in retrieved issues, with source links |
 | `GET` | `/metrics/summary` | Counts of total, open, and closed issues |
 
 ### Keyword search, filtering, and pagination
@@ -158,7 +161,7 @@ Run the full test suite from the project root with the virtual environment activ
 python -m pytest -q
 ```
 
-At the time of this README update, **20 tests pass**. Tests cover API behavior, GitHub client handling, ingestion/upsert behavior, and the semantic-search endpoint contract. Endpoint tests mock the retrieval function, so they do not need to download the model or contact GitHub. Manual semantic retrieval has also been checked against the local sample dataset.
+Tests cover API behavior, GitHub client handling, ingestion/upsert behavior, semantic search, and the LLM provider adapter. Run the suite locally before relying on a test count. Endpoint tests mock the retrieval function, so they do not need to download the model or contact GitHub. Manual semantic retrieval has also been checked against the local sample dataset.
 
 ## Current scope and next steps
 
@@ -166,20 +169,20 @@ Implemented:
 1. GitHub issue ingestion, normalization, and relational storage.
 2. FastAPI endpoints for issue access and summary metrics.
 3. Sentence Transformer embeddings and FAISS semantic retrieval.
-4. Cached model/index within a running process.
-5. Automated endpoint and ingestion tests.
+4. Optional LLM answer generation with source issue links.
+5. Automated endpoint, ingestion, and provider-adapter tests.
 
 Potential next steps:
 1. Add retrieval-level evaluation with a labeled query set and metrics such as Recall@k or MRR.
 2. Refresh the vector index automatically after ingestion and consider persistent index storage.
-3. Add an LLM answer-generation layer that cites retrieved issues as evidence.
+3. Add retrieval and answer-quality evaluation with a labeled benchmark.
 4. Explore tool-using workflows or LangGraph only after defining a clear use case.
 5. Add human approval, audit logging, and safeguards before any GitHub write actions.
 
 ## Security and honest scope
 
 - Never commit `.env` files or API tokens.
-- The current semantic-search endpoint retrieves ranked issues; it does not produce LLM-generated answers.
+- LLM answer generation is optional and requires a configured OpenAI-compatible provider.
 - Agent workflows and GitHub write actions are not implemented.
 - Do not claim retrieval or classification improvements until they have been measured with a defined evaluation set.
 
