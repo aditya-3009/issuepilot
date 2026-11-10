@@ -1,6 +1,6 @@
 # IssuePilot
 
-IssuePilot is a developer-operations intelligence project that ingests public GitHub issues, stores them in a relational database, and exposes them through a REST API. It supports both keyword-based search and semantic retrieval over issue content.
+IssuePilot is a developer-operations intelligence project that ingests public GitHub issues, stores them in a relational database, and exposes them through a REST API. It supports both keyword-based search semantic retrieval over issue content, and optional RAG answers grounded in retrieved issues.
 
 The current implementation is a retrieval-focused foundation for a future RAG workflow. It retrieves relevant issues and their source URLs; it does **not yet generate answers with an LLM** or execute agent-driven write actions.
 
@@ -12,7 +12,7 @@ The current implementation is a retrieval-focused foundation for a future RAG wo
 - Stores data in SQLite by default, with PostgreSQL support through `DATABASE_URL`.
 - Exposes FastAPI endpoints for health checks, issue listing/search/filtering, summary metrics, and semantic search.
 - Uses Sentence Transformers (`sentence-transformers/all-MiniLM-L6-v2`) to create 384-dimensional embeddings.
-- Uses FAISS inner-product search over normalized embeddings to rank semantically similar issues.
+- Uses FAISS inner-product search over normalized embeddings to rank semantically similar issues.\n- Supports optional LLM answer generation through an OpenAI-compatible chat-completions API.\n- Returns source issue metadata and GitHub URLs alongside generated answers.
 - Caches the embedding model and in-memory FAISS index within a running process.
 - Includes automated tests for API behavior, GitHub client handling, ingestion safeguards, and semantic-search endpoint behavior.
 
@@ -102,7 +102,7 @@ Open the interactive documentation at [http://127.0.0.1:8000/docs](http://127.0.
 |---|---|---|
 | `GET` | `/health` | Health check |
 | `GET` | `/issues` | List, keyword-search, filter, and paginate issues |
-| `GET` | `/issues/semantic-search?q=API%20validation%20errors&top_k=5` | Retrieve issues ranked by semantic similarity |
+| `GET` | `/issues/semantic-search?q=API%20validation%20errors&top_k=5` | Retrieve issues ranked by semantic similarity |\n| `POST` | `/issues/ask` | Generate an answer grounded in retrieved issues, with source links |
 | `GET` | `/metrics/summary` | Counts of total, open, and closed issues |
 
 ### Keyword search, filtering, and pagination
@@ -182,3 +182,35 @@ Potential next steps:
 - The current semantic-search endpoint retrieves ranked issues; it does not produce LLM-generated answers.
 - Agent workflows and GitHub write actions are not implemented.
 - Do not claim retrieval or classification improvements until they have been measured with a defined evaluation set.
+
+
+## RAG question answering
+
+IssuePilot can answer engineering questions using the indexed GitHub issues as evidence. The endpoint first retrieves the top-k semantically relevant issues, passes their descriptions to an LLM, and returns the answer with source links for inspection.
+
+Configure an OpenAI-compatible provider in your local `.env` file:
+
+```dotenv
+LLM_API_KEY=your-provider-api-key
+LLM_MODEL=your-chat-model
+LLM_BASE_URL=https://api.openai.com/v1
+```
+
+The provider must expose `POST /chat/completions`. Compatible hosted or local inference servers can be used by changing `LLM_BASE_URL`. No API key is required for the existing ingestion, search, or analytics endpoints.
+
+Example PowerShell request:
+
+```powershell
+$body = @{
+  question = "What recurring causes of validation errors are reported?"
+  top_k = 5
+} | ConvertTo-Json
+
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/issues/ask" -ContentType "application/json" -Body $body
+```
+
+The response contains `question`, `answer`, and `sources` (repository, issue number, title, URL, and retrieval similarity). If retrieval returns no results, the API returns an explicit no-evidence response without calling the LLM. If the provider is not configured, the endpoint returns HTTP 503; provider failures return HTTP 502.
+
+Tests mock the provider, so they do not require a paid API key or make network requests.
+
+**Limitations:** answer quality depends on retrieval quality and the configured model. Retrieved issue text is untrusted input; prompt instructions reduce instruction-following risk but are not a complete security boundary. No answer-quality benchmark has been run yet, so do not claim measured accuracy or quality improvements.
