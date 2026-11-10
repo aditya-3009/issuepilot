@@ -16,7 +16,7 @@ app = FastAPI(
     title="IssuePilot API",
     description=(
         "Developer-operations intelligence: "
-        "GitHub issue ingestion, analytics, and semantic search."
+        "GitHub issue ingestion, analytics, semantic search, and cited RAG answers."
     ),
     version="0.3.0",
 )
