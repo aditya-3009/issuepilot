@@ -1,4 +1,3 @@
-
 from functools import lru_cache
 from threading import Lock
 
@@ -11,20 +10,18 @@ from .models import Issue
 
 
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-
 _index_lock = Lock()
 
 
 def issue_to_text(issue: Issue) -> str:
     """Convert a GitHub issue into searchable text."""
-    parts = [
+    return "\n".join([
         f"Repository: {issue.repo_full_name}",
         f"Title: {issue.title}",
         f"State: {issue.state}",
         f"Labels: {', '.join(issue.labels or [])}",
         f"Description: {issue.body or ''}",
-    ]
-    return "\n".join(parts)
+    ])
 
 
 @lru_cache(maxsize=1)
@@ -37,38 +34,17 @@ def build_index():
     """Build an in-memory FAISS index from stored GitHub issues."""
     with SessionLocal() as session:
         issues = session.query(Issue).order_by(Issue.id).all()
-
         if not issues:
-            raise ValueError(
-                "No issues found. Run the ingestion command first."
-            )
-
-        records = [
-            {
-                "id": issue.id,
-                "repo": issue.repo_full_name,
-                "number": issue.number,
-                "title": issue.title,
-                "state": issue.state,
-                "url": issue.html_url,
-                "text": issue_to_text(issue),
-            }
-            for issue in issues
-        ]
-
+            raise ValueError("No issues found. Run the ingestion command first.")
+        records = [{
+            "id": issue.id, "repo": issue.repo_full_name, "number": issue.number,
+            "title": issue.title, "state": issue.state, "url": issue.html_url,
+            "body": issue.body or "", "text": issue_to_text(issue),
+        } for issue in issues]
     model = get_model()
-    texts = [record["text"] for record in records]
-
-    embeddings = model.encode(
-        texts,
-        convert_to_numpy=True,
-        normalize_embeddings=True,
-        show_progress_bar=False,
-    ).astype(np.float32)
-
+    embeddings = model.encode([r["text"] for r in records], convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False).astype(np.float32)
     index = faiss.IndexFlatIP(embeddings.shape[1])
     index.add(embeddings)
-
     return model, index, records
 
 
@@ -90,32 +66,18 @@ def semantic_search(query: str, top_k: int = 5) -> list[dict]:
     query = query.strip()
     if not query:
         return []
-
     if not 1 <= top_k <= 20:
         raise ValueError("top_k must be between 1 and 20.")
-
     with _index_lock:
         model, index, records = get_search_index()
-
-        query_embedding = model.encode(
-            [query],
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        ).astype(np.float32)
-
-        k = min(top_k, len(records))
-        scores, indices = index.search(query_embedding, k)
-
+        query_embedding = model.encode([query], convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False).astype(np.float32)
+        scores, indices = index.search(query_embedding, min(top_k, len(records)))
     results = []
-
     for score, idx in zip(scores[0], indices[0]):
         if idx < 0:
             continue
-
         record = records[int(idx)].copy()
         record.pop("text")
         record["similarity"] = round(float(score), 4)
         results.append(record)
-
     return results
