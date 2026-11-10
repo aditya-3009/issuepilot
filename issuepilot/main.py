@@ -1,8 +1,10 @@
 
 from fastapi import Depends, FastAPI, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from .answering import LLMConfigurationError, LLMRequestError, generate_answer
 from .db import Base, engine, get_db
 from .models import Issue
 from .retrieval import semantic_search
@@ -16,7 +18,7 @@ app = FastAPI(
         "Developer-operations intelligence: "
         "GitHub issue ingestion, analytics, and semantic search."
     ),
-    version="0.2.0",
+    version="0.3.0",
 )
 
 
@@ -25,7 +27,7 @@ def health():
     return {
         "status": "ok",
         "service": "issuepilot-api",
-        "version": "0.2.0",
+        "version": "0.3.0",
     }
 
 
@@ -154,6 +156,52 @@ def search_issues_semantically(
         "count": len(results),
         "items": results,
     }
+
+
+class AskRequest(BaseModel):
+    question: str = Field(min_length=3, max_length=2000)
+    top_k: int = Field(default=5, ge=1, le=10)
+
+
+@app.post("/issues/ask", tags=["RAG"])
+def ask_about_issues(payload: AskRequest):
+    """Answer a question using retrieved GitHub issues and return source links."""
+    question = payload.question.strip()
+    if len(question) < 3:
+        raise HTTPException(status_code=422, detail="Question is too short.")
+
+    try:
+        retrieved = semantic_search(question, top_k=payload.top_k)
+        if not retrieved:
+            return {
+                "question": question,
+                "answer": "I could not find relevant issues in the indexed repositories.",
+                "sources": [],
+            }
+        answer = generate_answer(question, retrieved)
+    except LLMConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except LLMRequestError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Issue question-answering failed. Check the server logs.",
+        ) from exc
+
+    sources = [
+        {
+            "repo": item["repo"],
+            "number": item["number"],
+            "title": item["title"],
+            "url": item["url"],
+            "similarity": item["similarity"],
+        }
+        for item in retrieved
+    ]
+    return {"question": question, "answer": answer, "sources": sources}
 
 
 @app.get("/metrics/summary", tags=["analytics"])
